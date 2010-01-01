@@ -12,11 +12,46 @@ https://plugins.atlassian.com/plugin/details/284
 
 
 (define-button-type 'confluence-space-button
-  'action 'confluence-get-page-list)
+  'action 'confluence-space-button-press)
+(define-button-type 'confluence-page-button
+  'action 'confluence-page-button-press)
 
 
-(defun confluence-get-page-list (button)
-  (message (with-output-to-string (print button))))
+(defun confluence-space-button-press (button)
+  (confluence-list-pages (button-get button :space)))
+
+
+(defun confluence-page-button-press (button)
+  (confluence-edit-page (button-get button :space)
+                        (button-get button :page)))
+
+
+(defun confluence-list-pages (space)
+  (interactive "sSpace: ")
+  (confluence-wipe-buffer)
+  (with-confluence-buffer
+    (confluence-command "getPageList" "--space" space)
+    (goto-line 1)
+    (confluence-kill-whole-line)
+    (confluence-parse (lambda ()
+                        (let ((line (confluence-line-string)))
+                          (make-text-button (line-beginning-position)
+                                            (line-end-position)
+                                            :space space
+                                            :page line
+                                            :type 'confluence-page-button))))
+    (sort-lines nil (point-min) (point-max)))
+  (confluence-show-buffer))
+
+
+(defun* confluence-edit-page (space page) 
+  (interactive "sSpace: \nsPage: ")
+  (confluence-wipe-buffer)
+  (with-confluence-buffer
+    (confluence-command "getSource" "--space" space "--title" page)
+    (goto-line 1)
+    (confluence-kill-whole-line))
+  (confluence-show-buffer))
 
 
 (defun* confluence-list-spaces ()
@@ -25,15 +60,16 @@ https://plugins.atlassian.com/plugin/details/284
   (with-confluence-buffer
     (let ((first t))
       (dolist (s (confluence-space-list))
-        (message (format "%s" s))
         (destructuring-bind (space name url visibility) s
+          (when (and first (string= visibility "personal"))
+            (setq first nil)
+            (insert "\n"))
           (insert (format "%s - %s" space (substring name 1 -1)))
           (make-text-button (line-beginning-position) (line-end-position)
-                            :type 'confluence-space-button))
-        (insert "\n"))
-      (when (and first (string= visibility "personal"))
-        (setq first nil)
-        (insert "\n")))))
+                            :space space
+                            :type 'confluence-space-button)
+          (insert "\n")))))
+  (confluence-show-buffer))
 
 
 (defun* confluence-space-list ()
@@ -43,17 +79,32 @@ https://plugins.atlassian.com/plugin/details/284
 
       ;; skip the count and the header
       (goto-line 3)
-      (while (not (eobp))
-        (let ((s (confluence-parse-space)))
-          (when s
-            (push s spaces)))
-        (next-line)))
+      (setq spaces (confluence-parse 'confluence-parse-space)))
     (let* ((spacesr (reverse spaces))
            (globalp (lambda (x) (string= "global" (cadddr x))))
            (globals (confluence-filter globalp spacesr))
            (others (confluence-filter 
                     (lambda (x) (not (funcall globalp x))) spacesr)))
       (append globals others))))
+
+
+(defun confluence-parse (parseline)
+  (save-excursion
+    (let ((results nil))
+      (while (not (eobp))
+        (if (confluence-line-empty-p)
+            (confluence-kill-whole-line)
+          (let ((s (funcall parseline)))
+            (when s
+              (push s results))
+            (next-line))))
+      results)))
+
+
+(defun confluence-line-empty-p ()
+  (save-excursion
+    (beginning-of-line)
+    (eolp)))
 
       
 (defun confluence-filter (condp lst)
@@ -72,13 +123,14 @@ https://plugins.atlassian.com/plugin/details/284
 (defun confluence-line-string ()
   (buffer-substring (line-beginning-position) (line-end-position)))
 
-(defun* confluence-command (action) 
-  (call-process "java" nil t t
-                "-jar" confluence-jar 
-                "--user" confluence-user
-                "--password" confluence-password
-                "--server" confluence-server
-                "--action" action))
+(defun* confluence-command (action &rest args) 
+  (apply 'call-process "java" nil t t
+         "-jar" confluence-jar 
+         "--user" confluence-user
+         "--password" confluence-password
+         "--server" confluence-server
+         "--action" action
+         args))
 
 
 (defmacro* with-confluence-buffer (&rest body)
@@ -89,11 +141,20 @@ https://plugins.atlassian.com/plugin/details/284
 
 
 (defun confluence-show-buffer () 
-  (set-window-buffer (selected-window) "*confluence*"))
+  (set-window-buffer (selected-window) "*confluence*")
+  (with-current-buffer "*confluence*"
+    (setq buffer-read-only t)))
 
 
 (defun confluence-wipe-buffer ()
   (with-confluence-buffer
     (kill-buffer nil)))
+
+(defun confluence-kill-whole-line ()
+  (let ((kill-whole-line t))
+    (kill-line)))
+
+
+
 
 (provide 'confluence2)
