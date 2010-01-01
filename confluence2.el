@@ -26,6 +26,70 @@ https://plugins.atlassian.com/plugin/details/284
                         (button-get button :page)))
 
 
+(defvar confluence-command-infile nil)
+
+(defvar confluence-mode-keywords 
+  '("h1." "h2." "h3." "h4." "h5." "h6." "bq."))
+
+
+(defvar confluence-font-lock-list 
+  '("{{[^}]*}}" "{[^}]*}" "\\[[^\]]*\\]"))
+
+
+(defvar confluence-page "")
+(defvar confluence-space "")
+(make-variable-buffer-local 'confluence-space)
+(make-variable-buffer-local 'confluence-page)
+
+
+(defvar confluence-mode-map 
+  (let ((map (make-sparse-keymap))
+        (menu-map (make-sparse-keymap "Confluence")))
+    (define-key map "\C-c\C-s" 'confluence-list-spaces)
+    (define-key map "\C-c\C-p" 'confluence-list-pages)
+    (define-key map "\C-x\C-s" 'confluence-save-page)
+    (define-key map [menu-bar confluence] (cons "Confluence" menu-map))
+    (define-key menu-map [confluence-list-spaces]
+      '(menu-item "List Spaces" confluence-list-spaces))
+    (define-key menu-map [confluence-list-pages]
+      '(menu-item "List Pages..." confluence-list-pages))
+    map))
+
+
+(define-generic-mode confluence-mode 
+  nil confluence-mode-keywords confluence-font-lock-list nil 
+  '(confluence-mode-setup))
+
+
+(defun confluence-mode-setup ()
+  (use-local-map confluence-mode-map))
+
+
+(defun confluence-save-page ()
+  (interactive)
+  (let ((space confluence-space)
+        (page confluence-page)
+        (content (buffer-string)))
+    (with-temp-buffer
+      (confluence-command "storePage" "--space" space 
+                          "--title" page 
+                          "--content" content)))
+  (not-modified)
+  (message "Page saved."))
+
+
+(defmacro confluence-with-temp-infile (contents &rest body)
+  (declare (indent 2))
+  (declare (debug t))
+  (let ((filename (gensym)))
+    `(let ((,filename (make-temp-file)))
+       (with-temp-file ,filename
+         (insert ,contents))
+       (let ((confluence-command-infile ,filename))
+         (unwind-protect
+             ,@body
+           (delete-file ,filename))))))
+
 (defun confluence-list-pages (space)
   (interactive "sSpace: ")
   (confluence-wipe-buffer)
@@ -46,12 +110,16 @@ https://plugins.atlassian.com/plugin/details/284
 
 (defun* confluence-edit-page (space page) 
   (interactive "sSpace: \nsPage: ")
-  (confluence-wipe-buffer)
-  (with-confluence-buffer
-    (confluence-command "getSource" "--space" space "--title" page)
-    (goto-line 1)
-    (confluence-kill-whole-line))
-  (confluence-show-buffer))
+  (let* ((name (format "*confluence - %s.%s*" space page))
+          (buf (confluence-wipe-buffer name)))
+    (with-current-buffer buf
+      (confluence-command "getSource" "--space" space "--title" page)
+      (goto-line 1)
+      (confluence-kill-whole-line)
+      (confluence-mode)
+      (setq confluence-space space)
+      (setq confluence-page page))
+    (set-window-buffer (selected-window) buf)))
 
 
 (defun* confluence-list-spaces ()
@@ -124,7 +192,7 @@ https://plugins.atlassian.com/plugin/details/284
   (buffer-substring (line-beginning-position) (line-end-position)))
 
 (defun* confluence-command (action &rest args) 
-  (apply 'call-process "java" nil t t
+  (apply 'call-process "java" confluence-command-infile t t
          "-jar" confluence-jar 
          "--user" confluence-user
          "--password" confluence-password
@@ -135,26 +203,30 @@ https://plugins.atlassian.com/plugin/details/284
 
 (defmacro* with-confluence-buffer (&rest body)
   (declare (indent defun))
+  (declare (debug t))
   `(with-buffer (get-buffer-create "*confluence*")
      (save-excursion
        ,@body)))
 
 
 (defun confluence-show-buffer () 
-  (set-window-buffer (selected-window) "*confluence*")
-  (with-current-buffer "*confluence*"
-    (setq buffer-read-only t)))
+  (set-window-buffer (selected-window) "*confluence*"))
 
 
-(defun confluence-wipe-buffer ()
-  (with-confluence-buffer
-    (kill-buffer nil)))
+(defun* confluence-wipe-buffer (&optional b)
+  (let ((buf (if (stringp b) 
+                 (get-buffer-create b) 
+               (if (null b)
+                   (get-buffer-create "*confluence*")
+                 b))))
+    (with-current-buffer buf
+      (erase-buffer))
+    buf))
+
 
 (defun confluence-kill-whole-line ()
   (let ((kill-whole-line t))
     (kill-line)))
-
-
 
 
 (provide 'confluence2)
